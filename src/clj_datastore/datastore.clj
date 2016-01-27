@@ -75,6 +75,11 @@
        :store
        (remove :deleted)))
 
+(defn select-records [ds kvs]
+  (let [pred (reduce (fn [p [k v]] #(and (= (get %1 k) v) (p %1))) (fn[x] true) kvs)]
+    (->> (list-records ds)
+         (filter pred))))
+
 (defn add-record [ds attrs]
   (let [model-keys (:model-keys @ds)
         recs (:store @ds)
