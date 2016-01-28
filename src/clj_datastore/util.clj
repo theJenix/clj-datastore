@@ -51,3 +51,6 @@
   [s]
   (Integer/parseInt s))
 
+(defn apply-values [f coll & ks]
+  (->> (map (partial get coll) ks)
+       (apply f)))

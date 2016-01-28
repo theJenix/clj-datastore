@@ -150,3 +150,7 @@
     (->> (-do-logical-delete recs id)
          (replace-store ds))
     (-write-records ds)))
+
+
+
+  ;; TODO: split-records in datastore, split into two temporary stores, so we can use map-records and join-records here
