@@ -1,13 +1,20 @@
 (ns clj-datastore.datastore
   (:require [clojure.java.io :as io]
             [clojure.set :refer [intersection rename-keys]]
-            [clj-datastore.util :refer [find-first =val? <->]]))
+            [clj-datastore.util :refer [find-first =val? <-> or-else]]))
 
-;;TODO: separate out file storage so we can support data stores with google drive, s3, database backings
-;; Can even implement esoteric datastores, like google calendar for calendar data 
+;; TODO: we should have transactions, and they should be defined as a block wherein the datastores
+;; are refreshed at the beginning, and changes are committed at the end (unless an exception is thrown past the commit) and all code in between works in memory...but this is gonna be a bit of work to get right, so im punting on it for now...
+;(defmacro with-transaction [datastores & body]
+;  (doseq [ds datastores] (list-records ds))
+;  body)
 
-(defn replace-store [ds new-store]
-  (swap! ds assoc :store new-store))
+;; TODO: maintain per record "dirty" flag, so the StorageService can identify which records need to be updated
+
+
+(defn replace-store [ds new-store & [date]]
+  (let [last-modified (or-else (java.util.Date.) date)]
+    (swap! ds assoc :store new-store :last-modified last-modified)))
 
 ;(defn -swap-in! [ds ks f & args]
 ;  (swap! ds assoc :store (f)))
@@ -22,9 +29,12 @@
       -get-max-id
       inc))
 
-(defrecord DataStore [model-keys nspace storage])
+(defrecord DataStore [model-keys nspace storage last-modified])
 
+;; StorageService lets us support data stores backed by google drive, s3, databases, file systems, etc
+;; TODO: Can even implement esoteric datastores, like google calendar for calendar data, maybe? 
 (defprotocol StorageService
+  (get-last-modified-date [_ ds])
   (read-records  [_ ds])
   (write-records [_ ds]))
 
@@ -49,9 +59,21 @@
           ;(println (type recs))
           (spit fname recs))))))
 
-(defn -reload-records [ds]
+(defn- -can-reload-records [ds]
+  (let [ds-last-modified (-> (:storage @ds)
+                             (get-last-modified-date ds))]
+    (-> (compare (:last-modified @ds) ds-last-modified)
+        neg?)))
+
+(defn- -do-reload-records [ds]
+  (println "Doin the reload!")
   (-> (:storage @ds)
       (read-records ds)))
+
+(defn- -reload-records [ds]
+  (if (-can-reload-records ds)
+    (-do-reload-records ds)
+    @ds))
 
 (defn -write-records [ds]
   (-> (:storage @ds)
@@ -66,7 +88,7 @@
   (-do-update-in-place recs id {:deleted true}))
 
 (defn make-data-store [model-keys nspace storage]
-  (let [ds (atom (DataStore. (set model-keys) nspace storage))]
+  (let [ds (atom (DataStore. (set model-keys) nspace storage nil))]
     (-reload-records ds)
     ds))
 
