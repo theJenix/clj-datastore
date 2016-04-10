@@ -44,6 +44,8 @@
                                     (str ".edn")))]
     (reify
       StorageService
+      (get-last-modified-date [_ ds]
+        nil)
       (read-records [_ ds]
         (let [fname (build-filename ds)
               new-recs (if (.exists (io/as-file fname))
@@ -62,8 +64,9 @@
 (defn- -can-reload-records [ds]
   (let [ds-last-modified (-> (:storage @ds)
                              (get-last-modified-date ds))]
-    (-> (compare (:last-modified @ds) ds-last-modified)
-        neg?)))
+    (or (nil? ds-last-modified)
+        (-> (compare (:last-modified @ds) ds-last-modified)
+            neg?))))
 
 (defn- -do-reload-records [ds]
   (println "Doin the reload!")
