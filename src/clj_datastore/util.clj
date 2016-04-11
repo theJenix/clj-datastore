@@ -1,6 +1,5 @@
 (ns clj-datastore.util
-  (:require [cheshire.core :as json]
-            [clojure.set :refer [rename-keys]]))
+  (:require [clojure.set :refer [rename-keys]]))
 
 (defn do-random-wait [max-wait-ms]
   (Thread/sleep (* max-wait-ms (Math/random)))) ; Small random throttle to help avoid collisions
@@ -19,10 +18,10 @@
   (reduce #(when (pred %2) (reduced %2)) nil coll))
 
 ;; TODO: move to utils
-(defn json-response [data & [status]]
-  {:status (or status 200)
-   :headers {"Content-Type" "application/json"}
-   :body (json/generate-string data)})
+;(defn json-response [data & [status]]
+;  {:status (or status 200)
+;   :headers {"Content-Type" "application/json"}
+;   :body (json/generate-string data)})
 
 (defn rename-all-keys [maps kmap]
   (map #(rename-keys % kmap) maps))

@@ -2,7 +2,7 @@
   (:require [clojure.java.io :as io]
             [clojure.set :refer [intersection rename-keys]]
             [clojure.tools.logging :as log]
-            [clj-datastore.util :refer [find-first =val? <-> or-else]]))
+            [clj-datastore.util :refer [find-first =val? <-> or-else do-random-wait]]))
 
 ;; TODO: we should have transactions, and they should be defined as a block wherein the datastores
 ;; are refreshed at the beginning, and changes are committed at the end (unless an exception is thrown past the commit) and all code in between works in memory...but this is gonna be a bit of work to get right, so im punting on it for now...
@@ -13,13 +13,14 @@
 ;; TODO: maintain per record "dirty" flag, so the StorageService can identify which records need to be updated
 
 (defn make-retry-write-exception []
-  (ex-info "Write failed, possibly due to conflicting writes or stale data.  Retry your write.") {:cause :retry-write})
+  (ex-info "Write failed, possibly due to conflicting writes or stale data.  Retry your write." {:cause :retry-write}))
 
 (defn make-write-failed-exception []
   (ex-info "Write failed, no more retries." {:cause :write-failed}))
 
-(defn replace-store [ds new-store revision & [date]]
-  (let [last-modified (or-else (java.util.Date.) date)]
+(defn replace-store [ds new-store & [revision date]]
+  (let [last-modified (or-else (java.util.Date.) date)
+        revision      (or-else (:revision @ds) revision)]
     (swap! ds assoc :store new-store :revision revision :last-modified last-modified)))
 
 ;(defn -swap-in! [ds ks f & args]
@@ -67,41 +68,54 @@
           ;(println (type recs))
           (spit fname recs))))))
 
-(defn- -can-reload-records [ds]
+(defn- -can-reload-records
+  "Tests if we should reload the records in a data store by testing the
+  last modified date of the resource managed by the StorageService
+  implementation"
+  [ds]
   (let [ds-last-modified (-> (:storage @ds)
                              (get-last-modified-date ds))]
     (or (nil? ds-last-modified)
         (-> (compare (:last-modified @ds) ds-last-modified)
             neg?))))
 
-(defn- -do-reload-records [ds]
+(defn- -do-reload-records!
+  "Reloads the records inside the data store, using the StorageService implementation
+  to retrieve and set the records (using replace-store)"
+  [ds]
   (println "Doin the reload!")
   (-> (:storage @ds)
       (read-records ds)))
 
-(defn- -reload-records [ds]
-  (if (-can-reload-records ds)
-    (-do-reload-records ds)
-    @ds))
+(defn- -reload-records!
+  "Conditionally reloads the records inside the data store.  This returns nothing
+  important but the datastore will contain up-to-date data after the function exits."
+  [ds]
+  (when (-can-reload-records ds)
+    (-do-reload-records! ds)))
 
-(defn -write-records [ds]
+(defn -update-and-write-records [ds f & args]
+  (time 
   (loop [retries 10]
-    (let [result
-          (try 
-            (-> (:storage @ds)
-                (write-records ds))
-            (catch clojure.lang.ExceptionInfo e (-> (ex-data e)
-                                                    :cause)))]
+    (-do-reload-records! ds)
+    ;; TODO race condition here...
+    (let [towrite (atom (replace-store ds (apply f (concat [(:store @ds)] args))))
+          result
+            (try 
+              (-> (:storage @towrite)
+                  (write-records towrite))
+              (catch clojure.lang.ExceptionInfo e (-> (ex-data e)
+                                                      :cause)))]
       (if (not= result :retry-write)
         result
         (if-not (pos? retries)
           (do
-            (log/warning "write unsuccessful in 10 retries.  Throwing exception to caller")
+            (log/warn "write unsuccessful in 10 retries.  Throwing exception to caller")
             (throw (make-write-failed-exception)))
           (do
-            (log/warning "retry-write exception caught.  Retrying the write...")
-            (do-random-wait)
-            (recur (dec retries))))))))
+            (log/warn "retry-write exception caught.  Retrying the write...")
+            (do-random-wait 100)
+            (recur (dec retries)))))))))
 
 
 (defn -do-update-in-place [recs id updates]
@@ -113,12 +127,13 @@
   (-do-update-in-place recs id {:deleted true}))
 
 (defn make-data-store [model-keys nspace storage]
-  (let [ds (atom (DataStore. (set model-keys) nspace storage nil))]
-    (-reload-records ds)
+  (let [ds (atom (DataStore. (set model-keys) nspace storage nil nil nil))]
+    (-reload-records! ds)
     ds))
 
 (defn list-records [ds]
-  (->> (-reload-records ds)
+  (-reload-records! ds)
+  (->> @ds
        :store
        (remove :deleted)))
 
@@ -129,16 +144,19 @@
 
 (defn add-record [ds attrs]
   (let [model-keys (:model-keys @ds)
-        recs (:store @ds)
+        e-with-id (atom {})
         e (-> attrs
-              (select-keys model-keys)
-              (assoc :id (-next-id recs)))]
-    (replace-store ds (conj recs e))
-    (-write-records ds)
-    e))
+              (select-keys model-keys))]
+    (-update-and-write-records
+      ds
+      (fn [recs]
+        (reset! e-with-id (assoc e :id (-next-id recs)))
+        (conj recs @e-with-id)))
+    @e-with-id))
 
 (defn get-record [ds id]
-  (->> (-reload-records ds)
+  (-reload-records! ds)
+  (->> @ds 
        :store
        (filter (=val? :id id))
         first))
@@ -177,26 +195,29 @@
 (defn map-records
   "Maps a function over the records in a datasource and optionally saves the datasource to persistence"
   [f ds & save]
-  (let [recs (:store @ds) ; TODO: API to get all records (even logically deleted ones)
-        new-recs (vec (map f recs))]
-    (replace-store ds new-recs)
-    (when save (-write-records ds))))
+  (if save
+    (-update-and-write-records ds #(vec (map f %)))
+    (let [recs (:store @ds) ; TODO: API to get all records (even logically deleted ones)
+          new-recs (vec (map f recs))]
+      (replace-store ds new-recs))))
 
 (defn update-record [ds id attrs]
   (let [recs (:store @ds)
         fixed (assoc attrs :id id)]
    ; TODO: wish I had a swap-in function 
    ; so i can do: (swap! data do-update-in-place id fixed)
-  (->> (-do-update-in-place recs id fixed)
-       (replace-store ds))
-  (-write-records ds)
-  (get-record ds id)))
+   (-update-and-write-records ds -do-update-in-place id fixed)
+;  (->> (-do-update-in-place recs id fixed)
+;       (replace-store ds))
+;  (-write-records ds)
+   (get-record ds id)))
 
 (defn delete-record [ds id]
   (let [recs (:store @ds)]
-    (->> (-do-logical-delete recs id)
-         (replace-store ds))
-    (-write-records ds)))
+    (-update-and-write-records ds -do-logical-delete id)))
+;    (->> (-do-logical-delete recs id)
+;         (replace-store ds))
+;    (-write-records ds)))
 
 
 
