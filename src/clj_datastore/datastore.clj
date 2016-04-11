@@ -1,6 +1,7 @@
 (ns clj-datastore.datastore
   (:require [clojure.java.io :as io]
             [clojure.set :refer [intersection rename-keys]]
+            [clojure.tools.logging :as log]
             [clj-datastore.util :refer [find-first =val? <-> or-else]]))
 
 ;; TODO: we should have transactions, and they should be defined as a block wherein the datastores
@@ -11,10 +12,15 @@
 
 ;; TODO: maintain per record "dirty" flag, so the StorageService can identify which records need to be updated
 
+(defn make-retry-write-exception []
+  (ex-info "Write failed, possibly due to conflicting writes or stale data.  Retry your write.") {:cause :retry-write})
 
-(defn replace-store [ds new-store & [date]]
+(defn make-write-failed-exception []
+  (ex-info "Write failed, no more retries." {:cause :write-failed}))
+
+(defn replace-store [ds new-store revision & [date]]
   (let [last-modified (or-else (java.util.Date.) date)]
-    (swap! ds assoc :store new-store :last-modified last-modified)))
+    (swap! ds assoc :store new-store :revision revision :last-modified last-modified)))
 
 ;(defn -swap-in! [ds ks f & args]
 ;  (swap! ds assoc :store (f)))
@@ -29,7 +35,7 @@
       -get-max-id
       inc))
 
-(defrecord DataStore [model-keys nspace storage last-modified])
+(defrecord DataStore [model-keys nspace storage last-modified store revision])
 
 ;; StorageService lets us support data stores backed by google drive, s3, databases, file systems, etc
 ;; TODO: Can even implement esoteric datastores, like google calendar for calendar data, maybe? 
@@ -79,8 +85,24 @@
     @ds))
 
 (defn -write-records [ds]
-  (-> (:storage @ds)
-      (write-records ds)))
+  (loop [retries 10]
+    (let [result
+          (try 
+            (-> (:storage @ds)
+                (write-records ds))
+            (catch clojure.lang.ExceptionInfo e (-> (ex-data e)
+                                                    :cause)))]
+      (if (not= result :retry-write)
+        result
+        (if-not (pos? retries)
+          (do
+            (log/warning "write unsuccessful in 10 retries.  Throwing exception to caller")
+            (throw (make-write-failed-exception)))
+          (do
+            (log/warning "retry-write exception caught.  Retrying the write...")
+            (do-random-wait)
+            (recur (dec retries))))))))
+
 
 (defn -do-update-in-place [recs id updates]
   (let [f (juxt filter remove)

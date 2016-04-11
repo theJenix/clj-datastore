@@ -2,6 +2,9 @@
   (:require [cheshire.core :as json]
             [clojure.set :refer [rename-keys]]))
 
+(defn do-random-wait [max-wait-ms]
+  (Thread/sleep (* max-wait-ms (Math/random)))) ; Small random throttle to help avoid collisions
+
 ;; copied from discovery-capture TODO: find a better place for this stuff
 (defn or-else [d x]
   (if x x d))
