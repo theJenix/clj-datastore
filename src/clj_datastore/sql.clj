@@ -1,47 +1,33 @@
 (ns clj-datastore.sql
   (:require [clojure.string :as s]
             [clj-datastore.datastore :as d]
-            [clojure.java.jdbc :as j]))
+            [clojure.java.jdbc :as j]
+            [clj-datastore.sql-spec :refer :all]
+            [clj-datastore.util :refer [<-> seq-or-bust]]))
 
 ;  (def mysql-db {:subprotocol "mysql"
 ;               :subname "//127.0.0.1:3306/clojure_test"
 ;               :user "clojure_test"
 ;               :password "clojure_test"})
 
-(defn nthapply [n f args]
-  (let [applyfn (fn [e]
-                  (->> (get e n)
-                       f
-                       (assoc e n)))]
-    (apply applyfn args)))
-
-(defn seq-or-bust [v]
-  (if-not (sequential? v) (vector v) v))
-
-(defn apply-in [ks f coll]
-  (let [ks (seq-or-bust ks)]
-    (->> (get-in coll ks)
-         f
-         (assoc-in coll ks))))
-
-(defn build-where-clause [kvs]
+(defn- build-where-clause [kvs]
   (if (empty? kvs)
     [nil []]
     (->> (map (fn[[k v]] [(str (name k) "= ?") v]) kvs)
          (apply mapv vector)
-         (apply-in [0] #(s/join " and " %)))))
+         (<-> update #(s/join " and " %) 0))))
 
-(defn do-select-records [db fields table & [kvs]]
+(defn- do-select-records [db fields table & [kvs]]
   (let [[wstr wargs] (build-where-clause kvs)
         fieldnames   (->> fields 
-                          (map name)
+                          (map (comp quote-string-with-dash name))
                           (s/join ","))
         tablename    (name table)
         qstr         (str "select " fieldnames " from " tablename " where " (or wstr "true"))]
     (println (concat [qstr wargs]))
     (j/query db (concat [qstr] wargs))))
 
-(defn build-join-clause [[table1 table2] conds]
+(defn- build-join-clause [[table1 table2] conds]
   (let [tn1 (name table1)
         tn2 (name table2)]
     (->> conds
@@ -49,7 +35,7 @@
          (map (fn [[x y]] (str tn1 "." x "=" tn2 "." y)))
          (s/join " and "))))
 
-(defn make-field-name [x]
+(defn- make-field-name [x]
   (let [kw (keyword x)]
     (if-let [n (namespace kw)]
       (str n "." (name kw))
@@ -62,19 +48,19 @@
 ;; the select returns non scoped fields, and resolves duplicates by appending _#.  we should
 ;; line this back up with the fields that were requested.
 ;; for now, it's ok, the consumer can deal with it...
-(defn do-join-records [db fields tables conds & [kvs]]
+(defn- do-join-records [db fields tables conds & [kvs]]
   (let [[wstr wargs] (build-where-clause kvs)
         jclause      (build-join-clause tables conds)
         fieldnames   (->> (seq-or-bust fields)
-                          (map make-field-name)
+                          (map (comp quote-string-with-dash make-field-name))
                           (s/join ","))
         tablenames   (->> (map name tables)
                           (s/join ","))
         qstr         (str "select " fieldnames " from " tablenames " where " jclause " and " (or wstr "true"))]
     (println (concat [qstr wargs]))
-    (j/query db (concat [qstr] wargs))))
+    (j/query db (concat [qstr] wargs) {:identifiers (comp quote-string-with-dash s/lower-case)})))
  
-(defn do-get-record [db fields table id]
+(defn- do-get-record [db fields table id]
   {:pre (some? id)}
   (-> (do-select-records db fields table {:id id})
       first))
@@ -86,30 +72,32 @@
     "postgresql" res ; Postgresql returns the whole row
     (do-get-record db fields table (:generated_key res))))
 
-(defn do-add-record [db fields table kvs]
+(defn- do-add-record [db fields table kvs]
+  (println "In do-add-record: " fields table kvs)
   (let [tablekw (keyword table)]
-    (if-let [res (-> (j/insert! db tablekw kvs)
+    (if-let [res (-> (j/insert! db tablekw kvs {:entities quote-string-with-dash})
                      first)]
       (get-inserted-row db fields tablekw res)
       nil)))
 
-(defn do-delete-record [db table id]
+(defn- do-delete-record [db table id]
   {:pre (some? id)}
   (let [tablekw (keyword table)
         wclause (->> (build-where-clause {:id id})
                      flatten)] ;; delete! needs this sequence to be flattened
     (assert (first wclause)) ;; Protection to make sure we don't delete the world!
+    ;; TODO: test if dashed strings mess up where clause
     (-> (j/delete! db tablekw wclause)
         first
         (= 1))))
 
-(defn do-update-record [db fields table id attrs]
+(defn- do-update-record [db fields table id attrs]
   {:pre (some? id)}
   (let [tablekw (keyword table)
         wclause (->> (build-where-clause {:id id})
                      flatten)] ;; update! needs this sequence to be flattened
     (assert (first wclause)) ;; Protection to make sure we don't update the world!
-    (-> (j/update! db tablekw attrs wclause)
+    (-> (j/update! db tablekw attrs wclause {:entities quote-string-with-dash})
         first
         (= 1))))
 
@@ -117,27 +105,36 @@
   (same-database? [db args]))
 
 (defn make-sql-data-store [mks ns connargs]
-  (let [mk-set (set mks)
+  ;; First thing..make sure we have a table, and it conforms to our spec
+  ;; FOR NOW: create a table if it doesnt exist, but throw an exception if the spec
+  ;; doesnt match
+  ;; NOTE: the query set of fields may be different than the modify set, if
+  ;; we add an ID in
+  (check-table connargs ns mks true false)
+
+  (let [query-set  (query-keys  mks)
+        modify-set (modify-keys mks)
         kwspace (keyword ns)]
-    ;ds (atom (DataStore. (set model-keys) nspace connargs nil nil nil))]
+    
+
     (reify
       ISqlDatastore
       (same-database? [_ args]
         (= args connargs))
       d/IDatastore 
-      (model-keys [_] mk-set)
+      (model-keys [_] mks)
       (nspace [_] kwspace)
       (select-records [_ kvs]
-        (do-select-records connargs mk-set kwspace kvs))
+        (do-select-records connargs query-set kwspace kvs))
       (list-records [_]
-        (do-select-records connargs mk-set kwspace))
+        (do-select-records connargs query-set kwspace))
       (add-record [_ kvs]
-        (do-add-record connargs mk-set kwspace kvs))
+        (do-add-record connargs modify-set kwspace kvs))
       (get-record [_ id]
-        (do-get-record connargs mk-set kwspace id))
+        (do-get-record connargs query-set kwspace id))
       (update-record [ds id attrs]
-        (when (do-update-record connargs mk-set kwspace id attrs)
-          (get-record ds id)))
+        (when (do-update-record connargs modify-set kwspace id attrs)
+          (do-get-record connargs query-set kwspace id)))
       (delete-record [_ id]
         (do-delete-record connargs kwspace id))
       (join-record [_ other f-or-pair & pairs]

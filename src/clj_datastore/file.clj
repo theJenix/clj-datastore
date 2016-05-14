@@ -1,4 +1,4 @@
-(ns clj-datastore.edn
+(ns clj-datastore.file
   (:require [clojure.java.io :as io]
             [clojure.set :refer [intersection rename-keys]]
             [clojure.tools.logging :as log]

@@ -4,6 +4,9 @@
 (defn do-random-wait [max-wait-ms]
   (Thread/sleep (* max-wait-ms (Math/random)))) ; Small random throttle to help avoid collisions
 
+(defn concatv [coll other & others]
+  (-> (apply concat coll other others)
+      vec))
 ;; copied from discovery-capture TODO: find a better place for this stuff
 (defn or-else [d x]
   (if x x d))
@@ -14,9 +17,16 @@
     (.setTime cal date)
     cal))
 
+(defn seq-or-bust [v]
+  (if-not (sequential? v) (vector v) v))
+
 (defn find-first [pred coll]
   (reduce #(when (pred %2) (reduced %2)) nil coll))
 
+(def simple-split-by (juxt filter remove))
+(defn split-by
+  ([pred coll]
+   (simple-split-by pred coll)))
 ;; TODO: move to utils
 ;(defn json-response [data & [status]]
 ;  {:status (or status 200)
