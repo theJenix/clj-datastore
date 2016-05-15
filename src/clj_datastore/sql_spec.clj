@@ -157,7 +157,10 @@
                 mspec-with-pk
                 {:entities quote-string-with-dash})
              (j/execute! db)))
-        (throw (make-table-missing-exception))))))
+        (throw (make-table-missing-exception))))
+;; TODO as part of checking the table, we should make sure the primary key sequence (if it exists) is set up correctly..
+;    (let [pk (find #(is-modifier-found? primary-key-modifier)
+;    (j/query db ["SELECT setval('parts_id_seq', (SELECT MAX(id) FROM parts)+1);
 
 
 (defn query-keys [mks]

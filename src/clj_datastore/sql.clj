@@ -5,6 +5,9 @@
             [clj-datastore.sql-spec :refer :all]
             [clj-datastore.util :refer [<-> seq-or-bust]]))
 
+;; FIXME: makes a lot of assumptions about an id primary key, but will accept
+;; a table spec (model keys) that uses a different primary key.  Should reconcile
+
 ;  (def mysql-db {:subprotocol "mysql"
 ;               :subname "//127.0.0.1:3306/clojure_test"
 ;               :user "clojure_test"
@@ -74,7 +77,9 @@
 
 (defn- do-add-record [db fields table kvs]
   (println "In do-add-record: " fields table kvs)
-  (let [tablekw (keyword table)]
+  (let [tablekw (keyword table)
+        kvs     (select-keys kvs fields)]
+    (println kvs)
     (if-let [res (-> (j/insert! db tablekw kvs {:entities quote-string-with-dash})
                      first)]
       (get-inserted-row db fields tablekw res)
@@ -91,13 +96,14 @@
         first
         (= 1))))
 
-(defn- do-update-record [db fields table id attrs]
+(defn- do-update-record [db fields table id kvs]
   {:pre (some? id)}
   (let [tablekw (keyword table)
+        kvs     (select-keys kvs fields)
         wclause (->> (build-where-clause {:id id})
                      flatten)] ;; update! needs this sequence to be flattened
     (assert (first wclause)) ;; Protection to make sure we don't update the world!
-    (-> (j/update! db tablekw attrs wclause {:entities quote-string-with-dash})
+    (-> (j/update! db tablekw kvs wclause {:entities quote-string-with-dash})
         first
         (= 1))))
 
@@ -132,8 +138,8 @@
         (do-add-record connargs modify-set kwspace kvs))
       (get-record [_ id]
         (do-get-record connargs query-set kwspace id))
-      (update-record [ds id attrs]
-        (when (do-update-record connargs modify-set kwspace id attrs)
+      (update-record [ds id kvs]
+        (when (do-update-record connargs modify-set kwspace id kvs)
           (do-get-record connargs query-set kwspace id)))
       (delete-record [_ id]
         (do-delete-record connargs kwspace id))
