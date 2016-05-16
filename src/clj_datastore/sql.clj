@@ -20,15 +20,17 @@
          (apply mapv vector)
          (<-> update #(s/join " and " %) 0))))
 
-(defn- do-select-records [db fields table & [kvs]]
+(defn- do-select-records [db field-map table & [kvs]]
   (let [[wstr wargs] (build-where-clause kvs)
-        fieldnames   (->> fields 
+        fieldnames   (->> (keys field-map) 
                           (map (comp quote-string-with-dash name))
                           (s/join ","))
         tablename    (name table)
         qstr         (str "select " fieldnames " from " tablename " where " (or wstr "true"))]
     (println (concat [qstr wargs]))
-    (j/query db (concat [qstr] wargs))))
+    ;; We need to correct for the fact that the DB may strip a field name of it's casedness (make it all lowercase) by mapping the results back to the actual fields requested
+    (->> (j/query db (concat [qstr] wargs))
+         (map #(fix-field-names field-map %)))))
 
 (defn- build-join-clause [[table1 table2] conds]
   (let [tn1 (name table1)
@@ -51,39 +53,38 @@
 ;; the select returns non scoped fields, and resolves duplicates by appending _#.  we should
 ;; line this back up with the fields that were requested.
 ;; for now, it's ok, the consumer can deal with it...
-(defn- do-join-records [db fields tables conds & [kvs]]
+(defn- do-join-records [db field-map tables conds & [kvs]]
   (let [[wstr wargs] (build-where-clause kvs)
         jclause      (build-join-clause tables conds)
-        fieldnames   (->> (seq-or-bust fields)
+        fieldnames   (->> (seq-or-bust (keys field-map))
                           (map (comp quote-string-with-dash make-field-name))
                           (s/join ","))
         tablenames   (->> (map name tables)
                           (s/join ","))
         qstr         (str "select " fieldnames " from " tablenames " where " jclause " and " (or wstr "true"))]
     (println (concat [qstr wargs]))
-    (j/query db (concat [qstr] wargs) {:identifiers (comp quote-string-with-dash s/lower-case)})))
+    (->> (j/query db (concat [qstr] wargs))
+         (map #(fix-field-names field-map %)))))
  
-(defn- do-get-record [db fields table id]
+(defn- do-get-record [db field-map table id]
   {:pre (some? id)}
-  (-> (do-select-records db fields table {:id id})
+  (-> (do-select-records db field-map table {:id id})
       first))
 
 (defn- get-inserted-row
   "Takes in the response from an insert! call and returns the row that was inserted into the database.  This is needed because the return value of insert! is different for some databases (looking at you postgresql) than others."
-  [db fields table res]
+  [db field-map table res]
   (condp = (:subprotocol db)
     "postgresql" res ; Postgresql returns the whole row
-    (do-get-record db fields table (:generated_key res))))
+    (do-get-record db field-map table (:generated_key res))))
 
-(defn- do-add-record [db fields table kvs]
-  (println "In do-add-record: " fields table kvs)
+(defn- do-add-record [db field-set table kvs]
+  (println "In do-add-record: " field-set table kvs)
   (let [tablekw (keyword table)
-        kvs     (select-keys kvs fields)]
+        kvs     (filter-keys field-set kvs)]
     (println kvs)
-    (if-let [res (-> (j/insert! db tablekw kvs {:entities quote-string-with-dash})
-                     first)]
-      (get-inserted-row db fields tablekw res)
-      nil)))
+    (-> (j/insert! db tablekw kvs {:entities quote-string-with-dash})
+        first)))
 
 (defn- do-delete-record [db table id]
   {:pre (some? id)}
@@ -96,10 +97,10 @@
         first
         (= 1))))
 
-(defn- do-update-record [db fields table id kvs]
+(defn- do-update-record [db field-set table id kvs]
   {:pre (some? id)}
   (let [tablekw (keyword table)
-        kvs     (select-keys kvs fields)
+        kvs     (filter-keys field-set kvs)
         wclause (->> (build-where-clause {:id id})
                      flatten)] ;; update! needs this sequence to be flattened
     (assert (first wclause)) ;; Protection to make sure we don't update the world!
@@ -118,11 +119,12 @@
   ;; we add an ID in
   (check-table connargs ns mks true false)
 
-  (let [query-set  (query-keys  mks)
-        modify-set (modify-keys mks)
+  (let [mk-set (set mks)
+        query-field-map  (make-query-map  mks)
+        modify-set       (-> (make-modify-map mks)
+                             keys
+                             set)
         kwspace (keyword ns)]
-    
-
     (reify
       ISqlDatastore
       (same-database? [_ args]
@@ -131,16 +133,17 @@
       (model-keys [_] mks)
       (nspace [_] kwspace)
       (select-records [_ kvs]
-        (do-select-records connargs query-set kwspace kvs))
+        (do-select-records connargs query-field-map kwspace kvs))
       (list-records [_]
-        (do-select-records connargs query-set kwspace))
+        (do-select-records connargs query-field-map kwspace))
       (add-record [_ kvs]
-        (do-add-record connargs modify-set kwspace kvs))
+        (when-let [res (do-add-record connargs modify-set kwspace kvs)]
+          (get-inserted-row connargs query-field-map kwspace res)))
       (get-record [_ id]
-        (do-get-record connargs query-set kwspace id))
+        (do-get-record connargs query-field-map kwspace id))
       (update-record [ds id kvs]
         (when (do-update-record connargs modify-set kwspace id kvs)
-          (do-get-record connargs query-set kwspace id)))
+          (do-get-record connargs query-field-map kwspace id)))
       (delete-record [_ id]
         (do-delete-record connargs kwspace id))
       (join-record [_ other f-or-pair & pairs]

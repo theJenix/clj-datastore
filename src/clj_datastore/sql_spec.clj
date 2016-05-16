@@ -29,10 +29,6 @@
       (keyword "character varying") (keyword (str "varchar(" char-max-length ")"))
       kw)))
 
-
-(defn- make-primary-key-spec []
-  (concatv [:id :serial] not-null-modifier primary-key-modifier))
-
 ;; TODO: very Postgre centric...need to test with other databases
 (defn- is-primary-key?
   "Returns true if the column name represents the primary key for the datastore namespace"
@@ -99,6 +95,14 @@
     mod
     []))
 
+(defn- is-primary-key-spec? [spec]
+  (and (sequential? spec)
+       (->> (partition 2 spec)
+            (is-modifier-found? primary-key-modifier))))
+
+(defn- make-primary-key-spec []
+  (concatv [:id :serial] not-null-modifier primary-key-modifier))
+
 (defn- model-key-to-column-spec [mk]
   (if (even? (count mk))
     (let [[[nm tp] & mods] (partition 2 mk)]
@@ -162,17 +166,31 @@
 ;    (let [pk (find #(is-modifier-found? primary-key-modifier)
 ;    (j/query db ["SELECT setval('parts_id_seq', (SELECT MAX(id) FROM parts)+1);
 
+(defn- make-normalized-key-map [mks]
+  (->> (map (fn[x] (if (sequential? x) (first x) x)) mks)
+       (map (fn[x] [(normalize-thing x) x]))
+       (into {})))
 
-(defn query-keys [mks]
-  (let [mspec (get-nspace-spec-from-model-keys mks)
-        mspec-with-pk (if (some #(->> (partition 2 %)
-                                      (is-modifier-found? primary-key-modifier))
-                               mspec)
-                       mspec
-                       (->> (make-primary-key-spec)
-                            (conj mspec)))]
-    (-> (map first mspec-with-pk)
-        set)))
+(defn make-query-map
+  "Returns a set of keys to use in queries when retrieving all data for the model keys provided.  This set will be a superset of the mks passed in (it may have a primary key or other internal data keys added).  Note this strips casedness, so if that's important, keep track outside."
+  [mks]
+  (let [mks-with-pk (if (some is-primary-key-spec? mks)
+                      mks
+                      (conj mks (make-primary-key-spec)))]
+    (make-normalized-key-map mks-with-pk))) 
 
-(defn modify-keys [mks]
-  (set mks))
+(defn make-modify-map [mks]
+  "Returns a map of keys where the map keys are 'normalized' and the values are the original specified values."
+  (make-normalized-key-map mks))
+
+
+(defn fix-field-names [field-map row]
+  (->> (map (fn[[k v]] [(field-map (normalize-thing k)) v]) row)
+       (into {})))
+
+(defn filter-keys
+  "Filters a map to only have the keys in the field-set.  Assumes the field-set values are 'normalized' (see normalize-thing in sql-spec)"
+  [field-set m]
+  (->> (map (fn[[k v]] [(normalize-thing k) v]) m)
+       (filter (comp field-set first))
+       (into {})))
