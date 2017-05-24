@@ -70,7 +70,6 @@
   "Reloads the records inside the data store, using the StorageService implementation
   to retrieve and set the records (using replace-store)"
   [ds]
-  (println "Doin the reload!")
   (-> (:storage @ds)
       (read-records ds)))
 
@@ -81,7 +80,10 @@
   (when (-can-reload-records ds)
     (-do-reload-records! ds)))
 
-(defn -update-and-write-records [ds f & args]
+(defn -update-and-write-records
+  "Takes an update function and args and repeatedly applies that to the latest store result
+   until the update sticks.  Similar to 'update', but for data stores"
+  [ds f & args]
   (time 
   (loop [retries 10]
     (-do-reload-records! ds)
@@ -104,15 +106,16 @@
             (do-random-wait 100)
             (recur (dec retries)))))))))
 
-
-(defn -do-update-in-place [recs id updates]
+(defn -do-update-in-place [recs model-keys id updates]
   (let [f (juxt filter remove)
-        [[e] rest] (f (=val? :id id) recs)]
-    (conj (vec rest) (merge e updates))))
+        [[e] rest] (f (=val? :id id) recs)
+        updated (-> (merge e updates)
+                    (select-keys model-keys)
+                    (assoc :id id))]
+    (conj (vec rest) updated)))
 
 (defn -do-logical-delete [recs id]
   (-do-update-in-place recs id {:deleted true}))
-
 
 (defn do-list-records [ds]
   (-reload-records! ds)
@@ -197,9 +200,8 @@
       (replace-store ds new-recs))))
 
 (defn do-update-record [ds id attrs]
-  (let [recs (:store @ds)
-        fixed (assoc attrs :id id)]
-   (-update-and-write-records ds -do-update-in-place id fixed)
+  (let [fixed (assoc attrs :id id)]
+   (-update-and-write-records ds -do-update-in-place (:model-keys @ds) id fixed)
    (do-get-record ds id)))
 
 (defn do-delete-record [ds id]
