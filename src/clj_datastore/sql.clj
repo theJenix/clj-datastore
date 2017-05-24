@@ -13,12 +13,23 @@
 ;               :user "clojure_test"
 ;               :password "clojure_test"})
 
+(defn- build-one-where-condition [k v]
+  (let [qk (str "\"" (name k) "\"")]
+    (if (or (set? v) (sequential? v))
+      (let [in-places (s/join "," (repeat (count v) "?"))]
+        (vector (str qk " in (" in-places ")") v))
+      (vector (str qk "= ?") v)
+      )))
+
 (defn- build-where-clause [kvs]
   (if (empty? kvs)
     [nil []]
-    (->> (map (fn[[k v]] [(str (name k) "= ?") v]) kvs)
+    ; First transpose, then build each clause, then transpose, then convert the first vector to a string clause
+    (->> (apply map vector kvs)
+         (apply map build-one-where-condition)
          (apply mapv vector)
-         (<-> update #(s/join " and " %) 0))))
+         (<-> update #(s/join " and " %) 0)
+         (<-> update flatten 1))))
 
 (defn- do-select-records [db field-map table & [kvs]]
   (let [[wstr wargs] (build-where-clause kvs)
