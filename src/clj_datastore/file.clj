@@ -114,8 +114,8 @@
                     (assoc :id id))]
     (conj (vec rest) updated)))
 
-(defn -do-logical-delete [recs id]
-  (-do-update-in-place recs id {:deleted true}))
+(defn -do-logical-delete [recs model-keys id]
+  (-do-update-in-place recs (conj model-keys :deleted) id {:deleted true}))
 
 (defn do-list-records [ds]
   (-reload-records! ds)
@@ -208,7 +208,7 @@
   (let [rec (do-get-record ds id)]
     (some?
       (when (and rec (not (:deleted rec)))
-        (-update-and-write-records ds -do-logical-delete id)
+        (-update-and-write-records ds -do-logical-delete (:model-keys @ds) id)
         ""))))
 
 ;; TODO currently on supports edn...should also support json, other files
