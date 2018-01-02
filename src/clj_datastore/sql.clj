@@ -13,13 +13,30 @@
 ;               :user "clojure_test"
 ;               :password "clojure_test"})
 
+;; TODO: dsl for query where conditions (s/and (s/eq :event types) (s/ge date-time sincets))
+(defn- get-op-string [op]
+  (condp = op
+    :ge ">="
+    :gt ">"
+    :eq "="
+    :lt "<"
+    :le "<="
+    :ne "<>"
+    :like "LIKE"
+    )
+  )
 (defn- build-one-where-condition [k v]
   (let [qk (str "\"" (name k) "\"")]
-    (if (or (set? v) (sequential? v))
-      (let [in-places (s/join "," (repeat (count v) "?"))]
-        (vector (str qk " in (" in-places ")") v))
-      (vector (str qk "= ?") v)
-      )))
+    (cond
+      (or (set? v) (sequential? v))
+        (let [in-places (s/join "," (repeat (count v) "?"))]
+          (vector (str qk " in (" in-places ")") v))
+      (map? v)
+        (let [[op val] (first v)]
+          (vector (str qk " " (get-op-string op) " ?") val))
+      :else
+        (vector (str qk "= ?") v))
+    ))
 
 (defn- build-where-clause [kvs]
   (if (empty? kvs)
