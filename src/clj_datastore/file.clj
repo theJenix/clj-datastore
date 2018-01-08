@@ -35,25 +35,29 @@
   ; TODO watch for file changes in a separate process
 (def local-storage
   (let [build-filename (fn [ds] (-> (:nspace @ds)
-                                    (str ".edn")))]
+                                    (str ".edn")))
+        monitor (Object.)]
     (reify
       StorageService
       (get-last-modified-date [_ ds]
-        nil)
-      (read-records [_ ds]
+        (let [fname (build-filename ds)]
+          (-> (.. (io/file fname) (lastModified))
+              (java.util.Date.))))
+      (read-records [this ds]
         (let [fname (build-filename ds)
               new-recs (if (.exists (io/as-file fname))
                          (->> fname    
                               slurp
                               read-string)
                          [])]
-          (replace-store ds new-recs)))
-      (write-records [_ ds]
+          (replace-store ds new-recs nil (get-last-modified-date this ds))))
+      (write-records [this ds]
         (let [fname (build-filename ds)
               recs  (:store @ds)]
-          ;(println "-----")
-          ;(println (type recs))
-          (spit fname recs))))))
+          (locking monitor
+            (when (neg? (compare (:last-modified @ds) (get-last-modified-date this ds)))
+              (throw (d/make-retry-write-exception)))
+            (spit fname recs)))))))
 
 (defn- -can-reload-records
   "Tests if we should reload the records in a data store by testing the
