@@ -23,41 +23,63 @@
       -get-max-id
       inc))
 
+;; NOTE: last-modified is the last modified date of the underlying storage resource, from when we last read the records
 (defrecord DataStore [model-keys nspace storage last-modified store revision])
 
 ;; StorageService lets us support data stores backed by google drive, s3, databases, file systems, etc
-;; TODO: Can even implement esoteric datastores, like google calendar for calendar data, maybe? 
+;; TODO: Can even implement esoteric datastores, like google calendar for calendar data, maybe?
 (defprotocol StorageService
   (get-last-modified-date [_ ds])
   (read-records  [_ ds])
-  (write-records [_ ds]))
+  (write-records
+    [_ ds]
+    "Writes the data store to storage, and refreshes the data store attributes such as revision and last-modified"
+    ))
+
+(defn get-current-datetime []
+  "Gets the current datetime.  This should remain it's own method, so we can inject test times with with-redefs"
+  (java.util.Date.))
 
   ; TODO watch for file changes in a separate process
 (def local-storage
   (let [build-filename (fn [ds] (-> (:nspace @ds)
                                     (str ".edn")))
-        monitor (Object.)]
+        monitor (Object.)
+        read-file #(if (.exists (io/as-file %1))
+                      (->> %1
+                           slurp
+                           read-string)
+                      {:recs [] :last-modified 0})]
+    ;; NOTE: https://bugs.openjdk.java.net/browse/JDK-8177809 means we need to keep our own last-modified time....frowny face
     (reify
       StorageService
       (get-last-modified-date [_ ds]
-        (let [fname (build-filename ds)]
-          (-> (.. (io/file fname) (lastModified))
-              (java.util.Date.))))
+        (let [fname (build-filename ds)
+              {:keys [_ last-modified]} (read-file fname)]
+          (when last-modified
+            (java.util.Date. last-modified))))
       (read-records [this ds]
         (let [fname (build-filename ds)
-              new-recs (if (.exists (io/as-file fname))
-                         (->> fname    
-                              slurp
-                              read-string)
-                         [])]
-          (replace-store ds new-recs nil (get-last-modified-date this ds))))
+              {:keys [recs last-modified]} (read-file fname)]
+          (replace-store ds recs nil (java.util.Date. last-modified))))
       (write-records [this ds]
-        (let [fname (build-filename ds)
-              recs  (:store @ds)]
-          (locking monitor
-            (when (neg? (compare (:last-modified @ds) (get-last-modified-date this ds)))
+        (locking monitor
+          (let [fname (build-filename ds)
+                recs  (:store @ds)
+                now (get-current-datetime)]
+            ;; When the last modified date of the data store is not equal to
+            ;; that of the underlying file, something's out of sync; in this case
+            ;; throw an exception to let the caller figure it out
+            ;; Note: this should only happen if two or more write processes are
+            ;; sitting at the locking statement (because the calling code should manage this for us otherwise)
+            ;; Further note: really, the case we're worried about is when the last-modified[ds] < last-modified[file]
+            ;; becasue thats the case that will overwrite someone elses update.  Since last-modified[ds] > last-modified[file]
+            ;; should not be possible, we want to throw in this case as well to let the calling code get things straight.
+            (when (not= (:last-modified @ds) (get-last-modified-date this ds))
               (throw (d/make-retry-write-exception)))
-            (spit fname recs)))))))
+            (spit fname {:recs recs :last-modified (.. now getTime)})
+            (replace-store ds recs nil now)
+            ))))))
 
 (defn- -can-reload-records
   "Tests if we should reload the records in a data store by testing the
@@ -84,31 +106,42 @@
   (when (-can-reload-records ds)
     (-do-reload-records! ds)))
 
+(defn make-data-store-update [ds f & args]
+  "Constructs a data store update, which is a complete data store that is the result of applying
+  f with args to the store in ds.
+  NOTE: this will NOT update ds; it is up to the caller to do so once the update is used successfully"
+  (let [update (atom @ds)
+        {:keys [store revision last-modified]} @ds]
+    (log/debug "in make-data-store-update: " last-modified)
+    (replace-store update (apply f (concat [store] args)) revision (or-else (java.util.Date. 0) last-modified))
+    update))
+
 (defn -update-and-write-records
   "Takes an update function and args and repeatedly applies that to the latest store result
    until the update sticks.  Similar to 'update', but for data stores"
   [ds f & args]
-  (time 
-  (loop [retries 10]
-    (-do-reload-records! ds)
-    ;; TODO race condition here...
-    (let [towrite (atom (replace-store ds (apply f (concat [(:store @ds)] args))))
-          result
-            (try 
+  (time
+    (loop [retries 10]
+      (-do-reload-records! ds)
+      ;; TODO race condition here...
+      (let [towrite (apply make-data-store-update ds f args)
+            result
+            (try
               (-> (:storage @towrite)
                   (write-records towrite))
               (catch clojure.lang.ExceptionInfo e (-> (ex-data e)
                                                       :cause)))]
-      (if (not= result :retry-write)
-        result
-        (if-not (pos? retries)
-          (do
-            (log/warn "write unsuccessful in 10 retries.  Throwing exception to caller")
-            (throw (d/make-write-failed-exception)))
-          (do
-            (log/warn "retry-write exception caught.  Retrying the write...")
-            (do-random-wait 100)
-            (recur (dec retries)))))))))
+        (if (not= result :retry-write)
+          ;; Swap in the result (new datastore values and return them
+          (reset! ds result)
+          (if-not (pos? retries)
+            (do
+              (log/warn "write unsuccessful in 10 retries.  Throwing exception to caller")
+              (throw (d/make-write-failed-exception)))
+            (do
+              (log/warn "retry-write exception caught.  Retrying the write...")
+              (do-random-wait 100)
+              (recur (dec retries)))))))))
 
 (defn -do-update-in-place [recs model-keys id updates]
   (let [f (juxt filter remove)
@@ -146,7 +179,7 @@
 
 (defn do-get-record [ds id]
   (-reload-records! ds)
-  (->> @ds 
+  (->> @ds
        :store
        (filter (=val? :id id))
         first))
@@ -159,7 +192,7 @@
                  (:model-keys @ds2))
                (conj :id))
         kmap (reduce #(assoc %1 %2 (keyword (:nspace @ds2) (name %2))) {} ks)]
-       
+
     #(rename-keys %1 kmap)))
 
 (defn -deconflict-keys
