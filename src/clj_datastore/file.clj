@@ -40,30 +40,62 @@
   "Gets the current datetime.  This should remain it's own method, so we can inject test times with with-redefs"
   (java.util.Date.))
 
+(defn- retry [retries f & args]
+  (loop [retries retries]
+    (let [retry (atom false)
+          ret (try
+                (apply f args)
+              (catch Throwable e
+                (log/debug "Caught exception!")
+                (do-random-wait 10)
+                (if (< 0 retries)
+                  (do
+                    (log/debug "Retrying, " retries "times left")
+                    (reset! retry true))
+                  (do
+                    (log/fatal e)
+                    (throw e)))))]
+      (if @retry
+        (recur (dec retries))
+        ret))))
+
+
+(defn- read-file [fname]
+  (log/debug "in read-file" fname)
+  (if (.exists (io/as-file fname))
+    (let [string (slurp fname)
+          len (count string)
+          contents (read-string string)
+          ]
+      (log/debug "returning from read-file: " (subs string (max 0 (- len 50))))
+      contents)
+    {:recs [] :last-modified 0}))
+
   ; TODO watch for file changes in a separate process
 (def local-storage
+  "A generic local file storage mechanism.  Because this relies on the local filesystem, it is susceptable to latencies and other quirks
+   (e.g. when flushing the data after spit, the file may be empty or incomplete on the next read).  Care has been taken to mitigate
+  these issues, but you should test in your environment before deploying to production."
   (let [build-filename (fn [ds] (-> (:nspace @ds)
-                                    (str ".edn")))
-        monitor (Object.)
-        read-file #(if (.exists (io/as-file %1))
-                      (->> %1
-                           slurp
-                           read-string)
-                      {:recs [] :last-modified 0})]
+                                    (str ".edn")))]
     ;; NOTE: https://bugs.openjdk.java.net/browse/JDK-8177809 means we need to keep our own last-modified time....frowny face
     (reify
       StorageService
       (get-last-modified-date [_ ds]
         (let [fname (build-filename ds)
-              {:keys [_ last-modified]} (read-file fname)]
+              ;; Retry a bunch...this mitigates an issue where a read immediately after another thread writes will result in
+              ;; a zero length file (which causes an exception in read-string)
+              {:keys [_ last-modified]} (retry 50 read-file fname)]
           (when last-modified
             (java.util.Date. last-modified))))
       (read-records [this ds]
         (let [fname (build-filename ds)
-              {:keys [recs last-modified]} (read-file fname)]
+              ;; Retry a bunch...this mitigates an issue where a read immediately after another thread writes will result in
+              ;; a zero length file (which causes an exception in read-string)
+              {:keys [recs last-modified]} (retry 50 read-file fname)]
           (replace-store ds recs nil (java.util.Date. last-modified))))
       (write-records [this ds]
-        (locking monitor
+        (locking ds
           (let [fname (build-filename ds)
                 recs  (:store @ds)
                 now (get-current-datetime)]
@@ -122,7 +154,7 @@
   [ds f & args]
   (time
     (loop [retries 10]
-      (-do-reload-records! ds)
+      (-reload-records! ds)
       ;; TODO race condition here...
       (let [towrite (apply make-data-store-update ds f args)
             result
