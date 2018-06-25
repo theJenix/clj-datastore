@@ -158,6 +158,7 @@
       (same-database? [_ args]
         (= args connargs))
       d/IDatastore 
+      ;; FIXME: this is not quite right, because mks may have schema definition (e.g. types, modifiers) that pollute "model-keys"
       (model-keys [_] mks)
       (nspace [_] kwspace)
       (select-records [_ kvs]
