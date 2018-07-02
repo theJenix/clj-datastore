@@ -25,7 +25,7 @@
   (let [kw (normalize-thing dt)]
     (condp = kw
       :int :integer
-      :integer (if (.contains column-default "nextval") :serial :integer)
+      :integer (if (and column-default (.contains column-default "nextval")) :serial :integer)
       (keyword "character varying") (keyword (str "varchar(" char-max-length ")"))
       kw)))
 
