@@ -252,7 +252,7 @@
         recs2 (do-list-records ds2)
         df    (-deconflict-key-fn ds1 ds2)
         f     (if (fn? f-or-pair) f-or-pair (make-join-fn f-or-pair pairs))]
-    (println "Enter join-records...")
+    (log/debug "Enter join-records...")
 ;    ;;TODO define separate mergefn and joinfn, so we can swap in different strategies
     (map (fn [e] (merge e (->> recs2
                                (find-first (partial f e))

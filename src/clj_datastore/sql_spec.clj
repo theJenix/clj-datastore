@@ -2,6 +2,7 @@
   "Contains functions to the specification for tables, and check/create/update tables as needed"
   (:require [clojure.java.jdbc :as j]
             [clojure.string :as s]
+            [clojure.tools.logging :as log]
             [clj-datastore.util :refer [split-by concatv]]))
 
 (def primary-key-modifier [:primary :key])
@@ -132,15 +133,14 @@
   (ex-info "Table missing on database." {:cause :table-missing}))
 
 (defn- is-spec-different? [s1 s2]
-  (println s1)
-  (println s2)
+  (log/info "comparing specs: " (not= (sort s1) (sort s2)) ", " s1 ", " s2)
   ;; Simple test, since same specs should be the identical, and any change indicates a difference
   (not= (sort s1) (sort s2)))
 
 (defn check-table
   [db ns mks create-if-missing update-if-different]
   (let [mspec (get-nspace-spec-from-model-keys mks)
-        _ (println mspec)
+        _ (log/info "spec: " mspec)
         mspec-with-pk (if (some #(->> (partition 2 %)
                                       (is-modifier-found? primary-key-modifier))
                                mspec)
@@ -154,13 +154,14 @@
           (do)
           (throw (make-spec-different-exception))))
       (if create-if-missing
-        (do (println mspec-with-pk)
-            (println (j/create-table-ddl (keyword ns) mspec-with-pk {:entities quote-string-with-dash}))
-        (->> (j/create-table-ddl
-                (keyword ns)
-                mspec-with-pk
-                {:entities quote-string-with-dash})
-             (j/execute! db)))
+        (do
+          (log/info "creating spec: " mspec-with-pk)
+          (log/debug "create statement: " (j/create-table-ddl (keyword ns) mspec-with-pk {:entities quote-string-with-dash}))
+          (->> (j/create-table-ddl
+                 (keyword ns)
+                 mspec-with-pk
+                 {:entities quote-string-with-dash})
+               (j/execute! db)))
         (throw (make-table-missing-exception))))))
 ;; TODO as part of checking the table, we should make sure the primary key sequence (if it exists) is set up correctly..
 ;    (let [pk (find #(is-modifier-found? primary-key-modifier)

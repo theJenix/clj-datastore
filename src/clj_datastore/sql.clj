@@ -1,5 +1,6 @@
 (ns clj-datastore.sql
   (:require [clojure.string :as s]
+            [clojure.tools.logging :as log]
             [clj-datastore.datastore :as d]
             [clojure.java.jdbc :as j]
             [clj-datastore.sql-spec :refer :all]
@@ -55,7 +56,7 @@
                           (s/join ","))
         tablename    (name table)
         qstr         (str "select " fieldnames " from " tablename " where " (or wstr "true"))]
-    (println (concat [qstr wargs]))
+    (log/debug "running query: " (concat [qstr wargs]))
     ;; We need to correct for the fact that the DB may strip a field name of it's casedness (make it all lowercase) by mapping the results back to the actual fields requested
     (->> (j/query db (concat [qstr] wargs))
          (map #(fix-field-names field-map %)))))
@@ -90,7 +91,7 @@
         tablenames   (->> (map name tables)
                           (s/join ","))
         qstr         (str "select " fieldnames " from " tablenames " where " jclause " and " (or wstr "true"))]
-    (println (concat [qstr wargs]))
+    (log/debug "running query: "(concat [qstr wargs]))
     (->> (j/query db (concat [qstr] wargs))
          (map #(fix-field-names field-map %)))))
  
@@ -107,10 +108,10 @@
     (do-get-record db field-map table (:generated_key res))))
 
 (defn- do-add-record [db field-set table kvs]
-  (println "In do-add-record: " field-set table kvs)
+  (log/debug "In do-add-record: " field-set table kvs)
   (let [tablekw (keyword table)
         kvs     (filter-keys field-set kvs)]
-    (println kvs)
+    (log/debug kvs)
     (-> (j/insert! db tablekw kvs {:entities quote-string-with-dash})
         first)))
 
