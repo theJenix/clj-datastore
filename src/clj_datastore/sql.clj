@@ -4,7 +4,9 @@
             [clj-datastore.datastore :as d]
             [clojure.java.jdbc :as j]
             [clj-datastore.sql-spec :refer :all]
-            [clj-datastore.util :refer [<-> seq-or-bust]]))
+            [clj-datastore.util :refer [<-> seq-or-bust]])
+  (:import [java.sql BatchUpdateException])
+  )
 
 ;; FIXME: makes a lot of assumptions about an id primary key, but will accept
 ;; a table spec (model keys) that uses a different primary key.  Should reconcile
@@ -51,7 +53,7 @@
 
 (defn- do-select-records [db field-map table & [kvs]]
   (let [[wstr wargs] (build-where-clause kvs)
-        fieldnames   (->> (keys field-map) 
+        fieldnames   (->> (keys field-map)
                           (map (comp quote-string-with-dash name))
                           (s/join ","))
         tablename    (name table)
@@ -94,7 +96,7 @@
     (log/debug "running query: "(concat [qstr wargs]))
     (->> (j/query db (concat [qstr] wargs))
          (map #(fix-field-names field-map %)))))
- 
+
 (defn- do-get-record [db field-map table id]
   {:pre (some? id)}
   (-> (do-select-records db field-map table {:id id})
@@ -133,9 +135,14 @@
         wclause (->> (build-where-clause {:id id})
                      flatten)] ;; update! needs this sequence to be flattened
     (assert (first wclause)) ;; Protection to make sure we don't update the world!
-    (-> (j/update! db tablekw kvs wclause {:entities quote-string-with-dash})
-        first
-        (= 1))))
+    (try
+      (-> (j/update! db tablekw kvs wclause {:entities quote-string-with-dash})
+          first
+          (= 1))
+    (catch BatchUpdateException e
+      (throw (.getNextException e))
+      )
+      )))
 
 (defprotocol ISqlDatastore
   (same-database? [db args]))
@@ -158,7 +165,7 @@
       ISqlDatastore
       (same-database? [_ args]
         (= args connargs))
-      d/IDatastore 
+      d/IDatastore
       ;; FIXME: this is not quite right, because mks may have schema definition (e.g. types, modifiers) that pollute "model-keys"
       (model-keys [_] mks)
       (nspace [_] kwspace)
