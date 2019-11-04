@@ -28,18 +28,40 @@
     :like "LIKE"
     )
   )
-(defn- build-one-where-condition [k v]
+
+(defn build-as-in-clause [v]
+  (or (set? v) (sequential? v)))
+
+(defn build-one-where-condition [k v]
+  "Takes a field name k and value v and builds a where condition as a vector of
+   prepared statement and argument"
   (let [qk (str "\"" (name k) "\"")]
     (cond
-      (or (set? v) (sequential? v))
-        (let [in-places (s/join "," (repeat (count v) "?"))]
-          (vector (str qk " in (" in-places ")") v))
+      (build-as-in-clause v)
+        (let [in-places (s/join "," (repeat (count v) "?"))
+              ;; normalize v to be a sequence, because of how we're representing the value
+              seqv (seq v)]
+          (vector (str qk " in (" in-places ")") seqv))
       (map? v)
         (let [[op val] (first v)]
           (vector (str qk " " (get-op-string op) " ?") val))
       :else
         (vector (str qk "= ?") v))
     ))
+
+(defn where-clause-is-false [kvs]
+  "Tests if a where clause will be obviously false.  Currently, this checks
+   for empty IN clauses, which will not return any rows and may result in an
+   error.
+
+   NOTE: if we change build-where-clause to support or conditions, this will
+   need to be modified."
+  (when (seq kvs)
+    (->> (apply map vector kvs)
+         second
+         (filter build-as-in-clause)
+         (map empty?)
+         (some true?))))
 
 (defn- build-where-clause [kvs]
   (if (empty? kvs)
@@ -52,16 +74,18 @@
          (<-> update flatten 1))))
 
 (defn- do-select-records [db field-map table & [kvs]]
-  (let [[wstr wargs] (build-where-clause kvs)
-        fieldnames   (->> (keys field-map)
-                          (map (comp quote-string-with-dash name))
-                          (s/join ","))
-        tablename    (name table)
-        qstr         (str "select " fieldnames " from " tablename " where " (or wstr "true"))]
-    (log/debug "running query: " (concat [qstr wargs]))
-    ;; We need to correct for the fact that the DB may strip a field name of it's casedness (make it all lowercase) by mapping the results back to the actual fields requested
-    (->> (j/query db (concat [qstr] wargs))
-         (map #(fix-field-names field-map %)))))
+  (if (where-clause-is-false kvs)
+    (list)
+    (let [[wstr wargs] (build-where-clause kvs)
+          fieldnames   (->> (keys field-map)
+                            (map (comp quote-string-with-dash name))
+                            (s/join ","))
+          tablename    (name table)
+          qstr         (str "select " fieldnames " from " tablename " where " (or wstr "true"))]
+      (log/debug "running query: " (concat [qstr wargs]))
+      ;; We need to correct for the fact that the DB may strip a field name of it's casedness (make it all lowercase) by mapping the results back to the actual fields requested
+      (->> (j/query db (concat [qstr] wargs))
+           (map #(fix-field-names field-map %))))))
 
 (defn- build-join-clause [[table1 table2] conds]
   (let [tn1 (name table1)
