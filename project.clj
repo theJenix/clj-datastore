@@ -1,4 +1,4 @@
-(defproject clj-datastore "0.3.9-SNAPSHOT"
+(defproject clj-datastore "0.3.10-SNAPSHOT"
   :description "FIXME: write description"
   :url "http://example.com/FIXME"
   :license {:name "Eclipse Public License"

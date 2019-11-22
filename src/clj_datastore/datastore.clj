@@ -17,6 +17,14 @@
 (defn make-write-failed-exception []
   (ex-info "Write failed, no more retries." {:cause :write-failed}))
 
+;; built in select keys that are used to control output collection
+(def limit ::limit)
+(def offset ::offset)
+(def order-by ::order-by)
+(def order ::order)
+(def order-desc "DESC")
+(def order-asc "ASC")
+
 (defprotocol IDatastore
   (model-keys [_] mk)
   (nspace [_] nspace)

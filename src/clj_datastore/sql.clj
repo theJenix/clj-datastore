@@ -67,21 +67,41 @@
   (if (empty? kvs)
     [nil []]
     ; First transpose, then build each clause, then transpose, then convert the first vector to a string clause
-    (->> (apply map vector kvs)
+    (->> (remove #(= (namespace d/limit) (namespace (first %))) kvs)
+         (apply map vector)
          (apply map build-one-where-condition)
          (apply mapv vector)
          (<-> update #(s/join " and " %) 0)
          (<-> update flatten 1))))
 
+(defn- build-order-by-clause [kvs]
+  (let [order-by (get kvs d/order-by)
+        order (get kvs d/order)]
+    (if order-by
+      (cond-> ""
+        true (str " order by " (name order-by))
+        (= order d/order-desc)  (str "DESC"))
+      "")))
+
+(defn- built-limit-offset-clause [kvs]
+  (let [limit (get kvs d/limit)
+        offset (get kvs d/offset)]
+    (cond-> ""
+      limit (str " limit " limit)
+      offset (str " offset " offset))
+  ))
+
 (defn- do-select-records [db field-map table & [kvs]]
   (if (where-clause-is-false kvs)
     (list)
-    (let [[wstr wargs] (build-where-clause kvs)
+    (let [order-str (build-order-by-clause kvs)
+          limit-str (build-limit-offset-clause kvs)
+          [wstr wargs] (build-where-clause kvs)
           fieldnames   (->> (keys field-map)
                             (map (comp quote-string-with-dash name))
                             (s/join ","))
           tablename    (name table)
-          qstr         (str "select " fieldnames " from " tablename " where " (or wstr "true"))]
+          qstr         (str "select " fieldnames " from " tablename " where " (or wstr "true") " " order-str " " limit-str)]
       (log/debug "running query: " (concat [qstr wargs]))
       ;; We need to correct for the fact that the DB may strip a field name of it's casedness (make it all lowercase) by mapping the results back to the actual fields requested
       (->> (j/query db (concat [qstr] wargs))
