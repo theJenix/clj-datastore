@@ -28,6 +28,7 @@
 (defprotocol IDatastore
   (model-keys [_] mk)
   (nspace [_] nspace)
+  (count-records [_ kvs])
   (select-records [_ kvs])
   (list-records [_])
   (add-record [_ kvs])

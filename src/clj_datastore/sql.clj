@@ -29,6 +29,8 @@
     )
   )
 
+(def quoted-name (comp quote-string-with-dash name))
+
 (defn build-as-in-clause [v]
   (or (set? v) (sequential? v)))
 
@@ -63,33 +65,41 @@
          (map empty?)
          (some true?))))
 
-(defn- build-where-clause [kvs]
-  (if (empty? kvs)
-    [nil []]
-    ; First transpose, then build each clause, then transpose, then convert the first vector to a string clause
-    (->> (remove #(= (namespace d/limit) (namespace (first %))) kvs)
-         (apply map vector)
-         (apply map build-one-where-condition)
-         (apply mapv vector)
-         (<-> update #(s/join " and " %) 0)
-         (<-> update flatten 1))))
+(defn build-where-clause [kvs]
+  (let [kvsp (remove #(= (namespace d/limit) (namespace (first %))) kvs)]
+    (if (empty? kvsp)
+      [nil []]
+      ; First transpose, then build each clause, then transpose, then convert the first vector to a string clause
+      (->> (apply map vector kvsp)
+           (apply map build-one-where-condition)
+           (apply mapv vector)
+           (<-> update #(s/join " and " %) 0)
+           (<-> update flatten 1)))))
 
 (defn- build-order-by-clause [kvs]
   (let [order-by (get kvs d/order-by)
         order (get kvs d/order)]
     (if order-by
       (cond-> ""
-        true (str " order by " (name order-by))
-        (= order d/order-desc)  (str "DESC"))
+        true (str " order by " (quoted-name order-by))
+        (= order d/order-desc)  (str " DESC"))
       "")))
 
-(defn- built-limit-offset-clause [kvs]
+(defn- build-limit-offset-clause [kvs]
   (let [limit (get kvs d/limit)
         offset (get kvs d/offset)]
     (cond-> ""
       limit (str " limit " limit)
       offset (str " offset " offset))
   ))
+
+(defn- do-count-records [db table & [kvs]]
+  (let [[wstr wargs] (build-where-clause kvs)
+        tablename (name table)
+        qstr (str "select count(*) from " tablename " where " (or wstr "true"))]
+    (-> (j/query db (concat [qstr] wargs))
+        first
+        :count)))
 
 (defn- do-select-records [db field-map table & [kvs]]
   (if (where-clause-is-false kvs)
@@ -98,7 +108,7 @@
           limit-str (build-limit-offset-clause kvs)
           [wstr wargs] (build-where-clause kvs)
           fieldnames   (->> (keys field-map)
-                            (map (comp quote-string-with-dash name))
+                            (map quoted-name)
                             (s/join ","))
           tablename    (name table)
           qstr         (str "select " fieldnames " from " tablename " where " (or wstr "true") " " order-str " " limit-str)]
@@ -213,6 +223,8 @@
       ;; FIXME: this is not quite right, because mks may have schema definition (e.g. types, modifiers) that pollute "model-keys"
       (model-keys [_] mks)
       (nspace [_] kwspace)
+      (count-records [_ kvs]
+        (do-count-records connargs kwspace kvs))
       (select-records [_ kvs]
         (do-select-records connargs query-field-map kwspace kvs))
       (list-records [_]
