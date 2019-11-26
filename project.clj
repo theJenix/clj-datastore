@@ -1,4 +1,4 @@
-(defproject clj-datastore "0.3.10-SNAPSHOT"
+(defproject clj-datastore "0.3.11-SNAPSHOT"
   :description "FIXME: write description"
   :url "http://example.com/FIXME"
   :license {:name "Eclipse Public License"
@@ -6,5 +6,5 @@
   :dependencies [[org.clojure/clojure "1.7.0"]
                  [org.clojure/tools.logging "0.3.1"]
                  [org.clojure/java.jdbc "0.6.1"]
-                 [org.postgresql/postgresql "9.4.1208.jre7"]
+                 [org.postgresql/postgresql "42.2.8"]
                  ])
